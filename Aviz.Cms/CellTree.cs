@@ -165,7 +165,7 @@ public class CellTree {
     }
 
     public (V3[] vertices, int[] indices) ExtractSurface(int initialSubdivisions) {
-        Subdivide(2);
+        Subdivide(initialSubdivisions);
         AdaptiveSubdivide(out var faceSet, out var leafCells);
 
         // segments of all leaf faces
