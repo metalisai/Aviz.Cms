@@ -42,7 +42,7 @@ public static class Lookups {
         { 4, 5, 6, 7 },
     };
 
-    public static readonly int [,] quadSegments = new int[18, 4] {
+    public static readonly sbyte [,] quadSegments = new sbyte[18, 4] {
         { -1, -1, -1, -1},
         {  1,  0, -1, -1},
         {  0,  3, -1, -1},
