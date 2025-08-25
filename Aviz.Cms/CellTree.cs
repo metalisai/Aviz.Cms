@@ -164,7 +164,12 @@ public class CellTree {
         this.data = data;
     }
 
-    public (V3[] vertices, int[] indices) ExtractSurface(int initialSubdivisions) {
+    public static (V3[] vertices, int[] indices) ExtractSurface(HermiteData data, int initialSubdivisions) {
+        var tree = new CellTree(data);
+        return tree.ExtractSurface(initialSubdivisions);
+    }
+
+    private (V3[] vertices, int[] indices) ExtractSurface(int initialSubdivisions) {
         Subdivide(initialSubdivisions);
         AdaptiveSubdivide(out var faceSet, out var leafCells);
 
