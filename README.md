@@ -65,3 +65,9 @@ HermiteData data = HermiteData.FromSdf(sdFunc, sdNormal, new V3(0.0f), 0.25f, 12
 var (vertices, indices) = CellTree.ExtractSurface(data, initialSubdivisions: 3);
 Console.WriteLine($"Generated mesh with {vertices.Length} vertices and {indices.Length / 3} triangles.");
 ```
+
+### TODO
+
+- [ ] Better handling of cases where 'sharp feature' is outside the cell (currently these are discarded). Probably the best possible option is to intersect SVD null space with the cell boundary and find the minimum norm point on that intersection.
+- [ ] Output normals. The only real issue is what to do with the new vertices created for sharp features. The vertices most likely need to be duplicated to have a sharp edge.
+- [ ] Testing and fixing edge cases and bugs.
