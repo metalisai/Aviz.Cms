@@ -7,26 +7,29 @@ using Debug = System.Diagnostics.Debug;
 
 public class HermiteData {
     // NOTE: might be better to use Dictionary for very sparse geometry
-	public (V3 p, V3 n)?[,,,] intersections;
+	public int[,,,] intersections;
     //Dictionary<(int, int, int, int), (V3 p, V3 n)> intersections = new();
+    List<(V3 p, V3 n)> intersectionList = new();
 	public bool[,,] isInside;
 	public V3 offset;
 	public float step;
     public int size;
 
-    public HermiteData((V3 p, V3 n)?[,,,] intersections, bool[,,] isInside, V3 offset, float step) {
-        this.intersections = intersections;
+    public HermiteData(bool[,,] isInside, V3 offset, float step) {
         this.isInside = isInside;
         this.offset = offset;
         this.step = step;
         this.size = isInside.GetLength(0)-1;
+        this.intersections = new int[3, size+1, size+1, size];
+        // dummy intersection at index 0
+        // avoids setting default value to -1
+        this.intersectionList.Add((V3.Zero, V3.Zero));
     }
 
 	public static HermiteData FromSdf(Func<V3, float> eval, Func<V3, V3> evalNormal, V3 offset, float step, int gridSize) {
 		var gp1 = gridSize+1;
         var isInside = new bool[gp1, gp1, gp1];
-        var intersections = new (V3, V3)?[3, gp1, gp1, gridSize];
-        var ret = new HermiteData(intersections, isInside, offset, step);
+        var ret = new HermiteData(isInside, offset, step);
 
 		// eval grid
 		for (int i = 0; i < gp1; i++)
@@ -75,7 +78,9 @@ public class HermiteData {
 						}
 					}
 					V3 minNormal = evalNormal(minPos);
-					ret.intersections[dir, i, j, k] = (minPos, minNormal);
+                    var newIndex = ret.intersectionList.Count;
+                    ret.intersectionList.Add((minPos, minNormal));
+					ret.intersections[dir, i, j, k] = newIndex;
 				}
 			}
 		}
@@ -84,13 +89,13 @@ public class HermiteData {
 
     public (V3 p, V3 n)? GetIntersection(EdgeCoord coord) {
         for (int i = 0; i < coord.count; i++) {
-            (V3 v, V3 n)? cur = coord.dir switch {
+            int curI = coord.dir switch {
                 0 => this.intersections[0, coord.y, coord.z, coord.x+i],
                 1 => this.intersections[1, coord.x, coord.z, coord.y+i],
                 2 or _ => this.intersections[2, coord.x, coord.y, coord.z+i],
             };
-            if (cur.HasValue) {
-                return cur;
+            if (curI > 0) {
+                return this.intersectionList[curI];
             }
         }
         return null;
@@ -98,21 +103,21 @@ public class HermiteData {
 
     public (EdgeCoord leaf, float t, V3 n)? GetIntersectionWithLeaf(EdgeCoord coord) {
         for (int i = 0; i < coord.count; i++) {
-            (V3 v, V3 n)? cur = coord.dir switch {
+            int curI = coord.dir switch {
                 0 => this.intersections[0, coord.y, coord.z, coord.x+i],
                 1 => this.intersections[1, coord.x, coord.z, coord.y+i],
-                2 => this.intersections[2, coord.x, coord.y, coord.z+i],
-                _ => throw new ArgumentException(),
+                2 or _ => this.intersections[2, coord.x, coord.y, coord.z+i],
             };
             var leaf = coord.dir switch {
                 0 => new EdgeCoord() { x = coord.x+i, y = coord.y, z = coord.z, count = 1, dir = coord.dir },
                 1 => new EdgeCoord() { x = coord.x, y = coord.y+i, z = coord.z, count = 1, dir = coord.dir },
                 2 or _ => new EdgeCoord() { x = coord.x, y = coord.y, z = coord.z+i, count = 1, dir = coord.dir },
             };
-            if (cur.HasValue) {
+            if (curI > 0) {
+                var cur = this.intersectionList[curI];
                 V3 start  = offset + new V3(leaf.x*step, leaf.y*step, leaf.z*step);
-                float t = (cur.Value.v - start).Length() / step;
-                return (leaf, t, cur.Value.n);
+                float t = (cur.p - start).Length() / step;
+                return (leaf, t, cur.n);
             }
         }
         return null;
@@ -121,13 +126,14 @@ public class HermiteData {
     // get intersection in cell-local coordinates
     public (V3 p, V3 n)? GetIntersectionNormalized(EdgeCoord coord, I3 cellMin, int cellSize) {
         for (int i = 0; i < coord.count; i++) {
-            (V3 v, V3 n)? cur = coord.dir switch {
+            int curI = coord.dir switch {
                 0 => this.intersections[0, coord.y, coord.z, coord.x+i],
                 1 => this.intersections[1, coord.x, coord.z, coord.y+i],
                 2 or _ => this.intersections[2, coord.x, coord.y, coord.z+i],
             };
-            if (cur is (V3 v, V3 n) curv) {
-                V3 normPos = curv.v - offset - cellMin.ToV3()*step;
+            if (curI > 0) {
+                var curv = this.intersectionList[curI];
+                V3 normPos = curv.p - offset - cellMin.ToV3()*step;
                 Debug.Assert(float.Abs(cellSize) > 1e-6);
                 normPos = normPos / ((float)cellSize * step);
                 return (normPos, curv.n);
@@ -145,16 +151,16 @@ public class HermiteData {
         Debug.Assert(coord.count > 0);
         List<(float t, V3 n)> intersectionsList = new();
         for (int i = 0; i < coord.count; i++) {
-            (V3 v, V3 n)? cur = coord.dir switch {
+            int curI = coord.dir switch {
                 0 => this.intersections[0, coord.y, coord.z, coord.x + i],
                 1 => this.intersections[1, coord.x, coord.z, coord.y + i],
-                2 => this.intersections[2, coord.x, coord.y, coord.z + i],
-                _ => throw new ArgumentException(),
+                2 or _ => this.intersections[2, coord.x, coord.y, coord.z + i],
             };
-            if (cur.HasValue) {
+            if (curI > 0) {
+                var cur = this.intersectionList[curI];
                 V3 start  = offset + new V3(coord.x*step, coord.y*step, coord.z*step);
-                float t = (cur.Value.v - start).Length() / (coord.count*step);
-                intersectionsList.Add((t, cur.Value.n));
+                float t = (cur.p - start).Length() / (coord.count*step);
+                intersectionsList.Add((t, cur.n));
             }
         }
         return intersectionsList.ToArray();
