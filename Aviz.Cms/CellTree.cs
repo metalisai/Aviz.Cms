@@ -224,26 +224,16 @@ public class CellTree {
                 }
             }
 
-            List<Vertex> tvs = new();
-            List<int> idxs = new();
             if (cellCase == 0 || !CheckIntersection3D(in comps[0], in comps[1])) {
                 // normal triangle fan case
                 for (int i = 0; i < loops.Length; i++) {
-                    TriangulateFan(in cellCtx, in comps[i], tvs, idxs); 
+                    TriangulateFan(in cellCtx, in comps[i], cmsVertices, indices); 
                 }
             } else {
                 // intersection found
                 //   connect components with 'cylinder'
                 Debug.Assert(loops.Length == 2);
-                TriangulateConnected(in comps[0], in comps[1], tvs, idxs);
-            }
-            // add vertices and indices to the output
-            if ((idxs?.Count ?? 0) > 0) {
-                int startIdx = cmsVertices.Count;
-                cmsVertices.AddRange(tvs);
-                for (int j = 0; j < idxs!.Count; j++) {
-                    indices.Add(startIdx + idxs[j]);
-                }
+                TriangulateConnected(in comps[0], in comps[1], cmsVertices, indices);
             }
         }
 
