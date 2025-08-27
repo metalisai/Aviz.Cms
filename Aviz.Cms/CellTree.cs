@@ -98,15 +98,22 @@ public class CellTree {
         public Cell cell;
         public I3 nodeMin;
         public int nodeSize;
-        public List<Segment> cellSegments;
         public HermiteData data;
 
-        public CellCtx(Cell cell, I3 nodeMin, int nodeSize, List<Segment> segs, HermiteData data) {
+        public List<Segment> cellSegments = new();
+        public HashSet<Vertex> visited = new();
+        public HashSet<Vertex> vertices = new();
+        public List<int> loop = new();
+        public HashSet<Segment> usedSegments = new();
+
+        public CellCtx(HermiteData data) {
+            this.data = data;
+        }
+
+        public void SetCell(Cell cell, I3 nodeMin, int nodeSize) {
             this.cell = cell;
             this.nodeMin = nodeMin;
             this.nodeSize = nodeSize;
-            this.data = data;
-            this.cellSegments = segs;
         }
     }
 
@@ -180,22 +187,21 @@ public class CellTree {
         for (int i = 0; i < comps.Length; i++) {
             comps[i] = new Component();
         }
-        List<Segment> cs = new();
-
         // output vertices and indices
         List<Vertex> cmsVertices = new();
         List<int> indices = new();
 
-        foreach (var (cellId, cellMin, cellSize) in leafCells) {
-            cs.Clear();
-            ref Cell cell = ref CollectionsMarshal.AsSpan(cellPool)[cellId];
-            CellCtx cellCtx = new(cell, cellMin, cellSize, cs, data);
+        CellCtx cellCtx = new(data);
 
-            GetCellFaceSegments(cellId, cs, faceSegments);
+        foreach (var (cellId, cellMin, cellSize) in leafCells) {
+            cellCtx.cellSegments.Clear();
+            cellCtx.SetCell(cellPool[cellId], cellMin, cellSize);
+
+            GetCellFaceSegments(cellId, cellCtx.cellSegments, faceSegments);
             var cornerBits = cellIsInsideBits[cellId]; 
 
             // find and process all components in the cell
-            var loops = GetLoops(cs);
+            var loops = GetLoops(cellCtx);
             for (int i = 0; i < loops.Length; i++) {
                 var loop = loops[i];
                 processComponent(loop, in cellCtx, ref comps[i]);
@@ -1168,45 +1174,49 @@ public class CellTree {
     }
 
     // finds all segment loops in CMS cell
-    private static Span<int[]> GetLoops(List<Segment> segments) {
+    private static Span<int[]> GetLoops(in CellCtx ctx) {
         var ret = new int[4][];
         int curRetIdx = 0;
-        HashSet<Vertex> visited = new();
-        Dictionary<Vertex, List<Segment>> vertexSegments = new();
+        var visited = ctx.visited;
+        var segments = ctx.cellSegments;
+        visited.Clear();
+        ctx.vertices.Clear();
 		foreach(var seg in segments) {
-			if (!vertexSegments.ContainsKey(seg.v1)) {
-				vertexSegments[seg.v1] = new List<Segment>();
-			}
-			if (!vertexSegments.ContainsKey(seg.v2)) {
-				vertexSegments[seg.v2] = new List<Segment>();
-			}
-			vertexSegments[seg.v1].Add(seg);
-			vertexSegments[seg.v2].Add(seg);
+            ctx.vertices.Add(seg.v1);
+            ctx.vertices.Add(seg.v2);
 		}
 
-		List<int> BuildLoop(Vertex start, HashSet<Segment> usedSegments)
+		static int[] BuildLoop(in CellCtx ctx, Vertex start)
 		{
-			List<int> loop = new();
+			var loop = ctx.loop;
+            loop.Clear();
+            var usedSegments = ctx.usedSegments;
 			Vertex current = start;
 			Vertex? previous = null;
 
 			while (true)
 			{
-				visited.Add(current);
-				var segs = vertexSegments[current];
+				ctx.visited.Add(current);
 
-				Segment nextSeg = segs
-					.FirstOrDefault(s => !usedSegments.Contains(s));
+                Segment? nextSeg = null;
+                foreach(var seg in ctx.cellSegments) {
+                    if ((seg.v1.Equals(current) || seg.v2.Equals(current))
+                        && !usedSegments.Contains(seg))
+                    {
+                        nextSeg = seg;
+                        break;
+                    }
+                }
 
-				if (nextSeg == default(Segment)) {
+				if (nextSeg == null) {
                     //throw new Exception("No next segment in loop");
 					break; // dead end or loop complete
 				}
 
-				usedSegments.Add(nextSeg);
-				loop.Add(segments.IndexOf(nextSeg));
+				usedSegments.Add(nextSeg.Value);
+				loop.Add(ctx.cellSegments.IndexOf(nextSeg.Value));
 
-				Vertex next = nextSeg.v1.Equals(current) ? nextSeg.v2 : nextSeg.v1;
+				Vertex next = nextSeg.Value.v1.Equals(current) ? nextSeg.Value.v2 : nextSeg.Value.v1;
 
 				if (next.Equals(start))
 				{
@@ -1217,21 +1227,20 @@ public class CellTree {
 				previous = current;
 				current = next;
 			}
-
-			return loop;
+			return loop.ToArray();
 		}
-		HashSet<Segment> usedSegments = new();
+        ctx.usedSegments.Clear();
 
-		foreach (var v in vertexSegments.Keys)
+		foreach (var v in ctx.vertices)
 		{
 			if (!visited.Contains(v))
 			{
-				var loop = BuildLoop(v, usedSegments);
-                ret[curRetIdx++] = loop.ToArray();
+				var loop = BuildLoop(ctx, v);
+                ret[curRetIdx++] = loop;
 			}
 		}
 #if DEBUG
-        Debug.Assert(usedSegments.Count == segments.Count, "Not all segments were used");
+        Debug.Assert(ctx.usedSegments.Count == segments.Count, "Not all segments were used");
 #endif
 		return ret.AsSpan().Slice(0, curRetIdx);
 	}
