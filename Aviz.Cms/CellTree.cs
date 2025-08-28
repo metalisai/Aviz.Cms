@@ -188,7 +188,7 @@ public class CellTree {
         Subdivide(initialSubdivisions);
         AdaptiveSubdivide(out var faceSet, out var leafCells);
         // segments of all leaf faces
-        List<Segment>[] faceSegments = EvaluateFaces(faceSet);
+        var faceSegments = EvaluateFaces(faceSet);
         // storage for components (max 4 per cell)
         Component[] comps = new Component[4];
         for (int i = 0; i < comps.Length; i++) {
@@ -428,10 +428,10 @@ public class CellTree {
     }
 
     // run marching squares on all leaf faces
-    private List<Segment>[] EvaluateFaces(List<(int, (int faceIdx, int cellId, I3 min, int size))> faceSet) {
+    private ReadOnlyMemory<Segment>[] EvaluateFaces(List<(int, (int faceIdx, int cellId, I3 min, int size))> faceSet) {
         // Find all unique leaf faces
         // NOTE: leaf nodes in octree are at least 7/8 percent of total nodes, so it's always more efficient to use array instead of hashmap, if ids are dense
-		List<Segment>[] faceSegments = new List<Segment>[facePool.Count];
+        (int s, int e)[] faceSegments = new (int s, int e)[facePool.Count];
 
         
         // parallel implementation, doesn't seem too efficient
@@ -459,16 +459,25 @@ public class CellTree {
             }
         }*/
 
+        List<Segment> segs = new();
         // loop through all leaf faces
         foreach (var (faceId, (faceIdx, cellId, nodeMin, nodeSize)) in faceSet) {
             if (facePool[faceId].IsLeaf) {
-                List<Segment> segs = new();
+                int before = segs.Count;
                 EvaluateCellFace(cellId, faceEdgePool[faceId], faceIdx, segs, cellIsInsideBits[cellId], nodeMin, nodeSize);
-                faceSegments[faceId] = segs;
+                var count = segs.Count - before;
+                faceSegments[faceId] = (before, count);
             }
         }
+        var segsArray = segs.ToArray();
+        ReadOnlyMemory<Segment>[] faceSegmentsMem = new ReadOnlyMemory<Segment>[faceSegments.Length];
+        for(int i = 0; i < faceSegments.Length; i++) {
+            var (s, e) = faceSegments[i];
+            if (e == 0) continue;
+            faceSegmentsMem[i] = segsArray.AsMemory(s, e);
+        }
 
-		return faceSegments;
+		return faceSegmentsMem;
     }
 
     private static void ResolveCellVertex(in CellCtx ctx, ref LocalVertex lv, Vertex cv) {
@@ -1147,13 +1156,13 @@ public class CellTree {
 
     struct FaceCtx {
         public List<Segment> outSegments;
-        public List<Segment>[] faceSegments;
+        public ReadOnlyMemory<Segment>[] faceSegments;
         public bool reverse;
         public CellTree tree;
     }
 
     // collect all segments from the quadtree
-    private void GetCellFaceSegments(int cellId, List<Segment> outSegments, List<Segment>[] faceSegments) {
+    private void GetCellFaceSegments(int cellId, List<Segment> outSegments, ReadOnlyMemory<Segment>[] faceSegments) {
         var ctx = new FaceCtx() {
             outSegments = outSegments,
             faceSegments = faceSegments,
@@ -1162,10 +1171,10 @@ public class CellTree {
 		static void recurseFace(int faceId, in FaceCtx ctx) {
 			if (ctx.tree.facePool[faceId].IsLeaf) {
                 var segs = ctx.faceSegments[faceId];
-                var len = segs.Count;
+                var len = segs.Length;
                 // segments on negative face need to be reversed
                 for (int i = 0; i < len; i++) {
-                    var cseg = ctx.reverse ? segs[i] : segs[len - i - 1];
+                    var cseg = ctx.reverse ? segs.Span[i] : segs.Span[len - i - 1];
                     if (ctx.reverse) {
                         ctx.outSegments.Add(cseg);
                     } else {
