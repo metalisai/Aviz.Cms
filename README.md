@@ -71,3 +71,4 @@ Console.WriteLine($"Generated mesh with {vertices.Length} vertices and {indices.
 - [ ] Better handling of cases where 'sharp feature' is outside the cell (currently these are discarded). Probably the best possible option is to intersect SVD null space with the cell boundary and find the minimum norm point on that intersection.
 - [ ] Output normals. The only real issue is what to do with the new vertices created for sharp features. The vertices most likely need to be duplicated to have a sharp edge.
 - [ ] Testing and fixing edge cases and bugs.
+- [ ] Custom simple SVD for Nx3 matrices to get rid of MathNet dependency.
