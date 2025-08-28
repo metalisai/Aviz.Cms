@@ -429,32 +429,25 @@ public class CellTree {
 
     // run marching squares on all leaf faces
     private List<Segment>[] EvaluateFaces(List<(int, (int faceIdx, int cellId, I3 min, int size))> faceSet) {
-        List<(int, (int faceIdx, int cellId, I3 min, int size))> faces = new();
-        faces.EnsureCapacity(faceSet.Count);
-        foreach (var kvp in faceSet) {
-            if (facePool[kvp.Item1].IsLeaf) {
-                faces.Add((kvp.Item1, kvp.Item2));
-            }
-        }
-
         // Find all unique leaf faces
         // NOTE: leaf nodes in octree are at least 7/8 percent of total nodes, so it's always more efficient to use array instead of hashmap, if ids are dense
 		List<Segment>[] faceSegments = new List<Segment>[facePool.Count];
 
-        /*
+        
         // parallel implementation, doesn't seem too efficient
         //   (most time is spent in ExtractSurface anyways)
-        System.Collections.Concurrent.ConcurrentBag<List<(int, List<Segment>)>> bag = new();
-        var partitioner = System.Collections.Concurrent.Partitioner.Create(0, faces.Count, 1024);
+        /*System.Collections.Concurrent.ConcurrentBag<List<(int, List<Segment>)>> bag = new();
+        var partitioner = System.Collections.Concurrent.Partitioner.Create(0, faceSet.Count, 1024);
         var options = new System.Threading.Tasks.ParallelOptions();
         options.TaskScheduler = System.Threading.Tasks.TaskScheduler.Default;
         options.MaxDegreeOfParallelism = 6;
         System.Threading.Tasks.Parallel.ForEach(partitioner, options, x => {
             List<(int, List<Segment>)> els = new();
             for (int i = x.Item1; i < x.Item2; i++) {
+                int faceId = faceSet[i].Item1;
+                if (!facePool[faceId].IsLeaf) continue;
                 List<Segment> segs = new();
-                int faceId = faces[i].Item1;
-                var (faceIdx, cellId, nodeMin, nodeSize) = faces[i].Item2;
+                var (faceIdx, cellId, nodeMin, nodeSize) = faceSet[i].Item2;
                 EvaluateCellFace(cellId, faceEdgePool[faceId], faceIdx, segs, cellIsInsideBits[cellId], nodeMin, nodeSize);
                 els.Add((faceId, segs));
             }
@@ -467,10 +460,12 @@ public class CellTree {
         }*/
 
         // loop through all leaf faces
-        foreach (var (faceId, (faceIdx, cellId, nodeMin, nodeSize)) in faces) {
-            List<Segment> segs = new();
-            EvaluateCellFace(cellId, faceEdgePool[faceId], faceIdx, segs, cellIsInsideBits[cellId], nodeMin, nodeSize);
-            faceSegments[faceId] = segs;
+        foreach (var (faceId, (faceIdx, cellId, nodeMin, nodeSize)) in faceSet) {
+            if (facePool[faceId].IsLeaf) {
+                List<Segment> segs = new();
+                EvaluateCellFace(cellId, faceEdgePool[faceId], faceIdx, segs, cellIsInsideBits[cellId], nodeMin, nodeSize);
+                faceSegments[faceId] = segs;
+            }
         }
 
 		return faceSegments;
