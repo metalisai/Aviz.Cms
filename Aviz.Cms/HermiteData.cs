@@ -1,5 +1,3 @@
-using System;
-
 namespace Aviz.Cms;
 
 using V3 = System.Numerics.Vector3;
@@ -143,13 +141,16 @@ public class HermiteData {
     }
 
     // convert normalized vertex back to global position
-    public V3 ResolveVertex(NewVertex vert) {
+    public V3 ResolveVertex(Vertex vert) {
+        Debug.Assert(vert.type == VertexType.New);
         return vert.cellMin.ToV3()*step + offset + vert.position*vert.cellSize*step;
     }
 
-    internal (float t, V3 n)[] FindEdgeIntersections(EdgeCoord coord) {
+    internal void FindEdgeIntersections(EdgeCoord coord, List<(float t, V3 n)> outIntr, bool clear = true) {
         Debug.Assert(coord.count > 0);
-        List<(float t, V3 n)> intersectionsList = new();
+        if (clear) {
+            outIntr.Clear();
+        }
         for (int i = 0; i < coord.count; i++) {
             int curI = coord.dir switch {
                 0 => this.intersections[0, coord.y, coord.z, coord.x + i],
@@ -160,9 +161,8 @@ public class HermiteData {
                 var cur = this.intersectionList[curI];
                 V3 start  = offset + new V3(coord.x*step, coord.y*step, coord.z*step);
                 float t = (cur.p - start).Length() / (coord.count*step);
-                intersectionsList.Add((t, cur.n));
+                outIntr.Add((t, cur.n));
             }
         }
-        return intersectionsList.ToArray();
     }
 }

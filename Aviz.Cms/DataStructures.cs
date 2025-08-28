@@ -81,35 +81,42 @@ public struct EdgeCoord {
     public override int GetHashCode() => HashCode.Combine(xyz);
 }
 
-public abstract class Vertex {
-    public abstract override bool Equals(object? obj);
-    public abstract override int GetHashCode();
+public enum VertexType {
+    Edge,
+    New
 }
 
-public class EdgeVertex : Vertex {
-    public EdgeCoord edge { get; set; }
-    public EdgeVertex(EdgeCoord edge) {
-        this.edge = edge;
-    }
-
-    public override bool Equals(object? obj) => obj is EdgeVertex ev ? this.edge == ev.edge : false;
-    public override int GetHashCode() => edge.GetHashCode();
-}
-
-public class NewVertex : Vertex {
+public class Vertex {
+    public VertexType type;
+    public EdgeCoord edge;
+    public int newVId;
     public V3 position;
     public I3 cellMin;
     public int cellSize;
 
-    public NewVertex(V3 position, I3 cellMin, int cellSize)
-    {
+    public Vertex(EdgeCoord edge) {
+        this.type = VertexType.Edge;
+        this.edge = edge;
+    }
+
+    public Vertex(int id, V3 position, I3 cellMin, int cellSize) {
+        this.type = VertexType.New;
         this.position = position;
         this.cellMin = cellMin;
         this.cellSize = cellSize;
+        this.newVId = id;
     }
 
-    public override bool Equals(object? obj) => ReferenceEquals(this, obj);
-    public override int GetHashCode() => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this);
+    public override bool Equals(object? obj) {
+        if (obj is not Vertex v) return false;
+        if (type != v.type) return false;
+        if (type == VertexType.Edge) return edge == v.edge;
+        return this.newVId == v.newVId;
+    }
+    public override int GetHashCode() {
+        if (type == VertexType.Edge) return edge.GetHashCode();
+        return HashCode.Combine(type, newVId);
+    }
 }
 
 public record struct Segment(Vertex v1, Vertex v2, int nDir);

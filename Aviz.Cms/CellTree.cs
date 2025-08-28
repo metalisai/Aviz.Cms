@@ -77,6 +77,7 @@ public class CellTree {
     // cosine of angle above which 3D feature is considered flat
     public const float SHARP_FEATURE_ANGLE_THRESHOLD_3D = 0.90f;
 
+    private int newVertexId = 0;
     private int size;
     private int rootCell;
     private HermiteData data;
@@ -99,6 +100,9 @@ public class CellTree {
         public I3 nodeMin;
         public int nodeSize;
         public HermiteData data;
+
+        //public Dictionary<Vertex, int> vertexMap = new();
+        public List<Vertex> vertexMap = new();
 
         public List<Segment> cellSegments = new();
         public HashSet<Vertex> visited = new();
@@ -138,8 +142,12 @@ public class CellTree {
     }
 
     struct SubdivideCtx {
+        public CellTree tree;
+        public List<(float t, V3 n)> tempIntrs;
         public HermiteData data;
-        public Dictionary<int, (int faceIdx, int cellId, I3 min, int size)> faceSet;
+        public List<(int c, I3 m, int s, int d)> initialLeaves;
+        public HashSet<int> faceSet;
+        public List<(int, (int faceIdx, int cellId, I3 min, int size))> faces;
         public List<(int, I3, int)> leafCells;
         public int maxDepth;
     }
@@ -179,7 +187,6 @@ public class CellTree {
     private (V3[] vertices, int[] indices) ExtractSurface(int initialSubdivisions) {
         Subdivide(initialSubdivisions);
         AdaptiveSubdivide(out var faceSet, out var leafCells);
-
         // segments of all leaf faces
         List<Segment>[] faceSegments = EvaluateFaces(faceSet);
         // storage for components (max 4 per cell)
@@ -192,6 +199,7 @@ public class CellTree {
         List<int> indices = new();
 
         CellCtx cellCtx = new(data);
+
 
         foreach (var (cellId, cellMin, cellSize) in leafCells) {
             cellCtx.cellSegments.Clear();
@@ -240,13 +248,14 @@ public class CellTree {
         // resolve vertex coordinates - compose final mesh data
         var retVertices = new V3[cmsVertices.Count];
         for (int i = 0; i < retVertices.Length; i++) {
-            switch (cmsVertices[i]) {
-                case EdgeVertex ev:
-                    var res = data.GetIntersection(ev.edge);
+            var cv = cmsVertices[i];
+            switch (cv.type) {
+                case VertexType.Edge:
+                    var res = data.GetIntersection(cv.edge);
                     retVertices[i] = res!.Value.p;
                     break;
-                case NewVertex nv:
-                    retVertices[i] = data.ResolveVertex(nv);
+                case VertexType.New:
+                    retVertices[i] = data.ResolveVertex(cv);
                     break;
             }
         }
@@ -289,36 +298,41 @@ public class CellTree {
         }
     }
 
-    private void AdaptiveSubdivide(out Dictionary<int, (int faceIdx, int cellId, I3 min, int size)> faceSet, out List<(int, I3, int)> leafCells) {
+    private void AdaptiveSubdivide(out List<(int, (int faceIdx, int cellId, I3 min, int size))> faces, out List<(int, I3, int)> leafCells) {
         int maxDepth = (int)Math.Round(Math.Log2(data.size));
         // leaves before subdivision
         List<(int c, I3 m, int s, int d)> leaves = new();
         // final leaf cells
         leafCells = new();
         // leaf faces
-        faceSet = new();
+        faces = new();
 
         // use struct instead of dragging everything through stack
         SubdivideCtx ctx = new() {
+            tree = this,
             data = data,
-            faceSet = faceSet,
+            faces = faces,
+            faceSet = new(),
+            initialLeaves = leaves,
             leafCells = leafCells,
-            maxDepth = maxDepth
+            maxDepth = maxDepth,
+            tempIntrs = new(),
         };
 
-        void traverse(int cellId, I3 min, int size, int depth) {
-            if (!cellPool[cellId].IsLeaf) {
+        static void traverse(in SubdivideCtx ctx, int cellId, I3 min, int size, int depth) {
+            if (!ctx.tree.cellPool[cellId].IsLeaf) {
+                var fc = ctx.tree.cellPool[cellId].firstChild;
                 for (int i = 0; i < 8; i++) {
-                    var child = cellPool[cellId].firstChild + i;
+                    var child = fc + i;
                     var co = Lookups.CornerOffsetI(i, size>>1);
                     var childMin = min + co;
-                    traverse(child, childMin, size>>1, depth+1);
+                    traverse(in ctx, child, childMin, size>>1, depth+1);
                 }
             } else {
-                leaves.Add((cellId, min, size, depth));
+                ctx.initialLeaves.Add((cellId, min, size, depth));
             }
         }
-        traverse(rootCell, new I3(), size, 0);
+        traverse(in ctx, rootCell, new I3(), size, 0);
         foreach(var (leaf, leafMin, leafSize, depth) in leaves) {
             AdaptiveSubdivide(leaf, leafMin, leafSize, depth, in ctx);
         }
@@ -326,17 +340,14 @@ public class CellTree {
 
     private void AdaptiveSubdivide(int cellId, I3 cellMin, int cellSize, int depth, in SubdivideCtx ctx) {
         bool foundAny = false;
-        List<V3> allIntr = new ();
-
+        ctx.tempIntrs.Clear();
         // collect all edge intersections
         for (int i = 0; i < 12; i++) {
             var (es, _) = Lookups.EdgeOffset(i, cellSize);
             var ecoord = new EdgeCoord(cellMin + es, cellSize, i>>2);
-            var intrs = data.FindEdgeIntersections(ecoord);
-            foreach(var intr in intrs) {
-                allIntr.Add(intr.n);
-            }
-            if (intrs.Length > 1) {
+            var oldCount = ctx.tempIntrs.Count;
+            data.FindEdgeIntersections(ecoord, ctx.tempIntrs, clear: false);
+            if (ctx.tempIntrs.Count-oldCount > 1) {
                 foundAny = true;
             }
         }
@@ -352,7 +363,7 @@ public class CellTree {
         cellIsInsideBits[cellId] = corners;
 
         // check if needs subdivision
-        bool complx = LikelyToContainComplexSurface(allIntr);
+        bool complx = LikelyToContainComplexSurface(ctx.tempIntrs);
         if ((complx && depth < ctx.maxDepth) || (foundAny && depth < ctx.maxDepth)) {
             SubdivideCell(cellId, cellMin, cellSize);
             if (!cellPool[cellId].IsLeaf) {
@@ -374,8 +385,9 @@ public class CellTree {
         for (int i = 0; i < 6; i++) {
             var faceId = cellFacePool[cellId][i];
             if (facePool[faceId].IsLeaf) {
-                if (!ctx.faceSet.ContainsKey(faceId)) {
-                    ctx.faceSet.Add(faceId, (i, cellId, cellMin, cellSize));
+                if (!ctx.faceSet.Contains(faceId)) {
+                    ctx.faceSet.Add(faceId);
+                    ctx.faces.Add((faceId, (i, cellId, cellMin, cellSize)));
                 }
             }
         }
@@ -384,12 +396,12 @@ public class CellTree {
     // the heuristic to detect complex surface
     //  checks pairs of normals for large angles
     //  if normals are similar then surface is likely flat
-    private static bool LikelyToContainComplexSurface(List<V3> inormals) {
+    private static bool LikelyToContainComplexSurface(List<(float t, V3 n)> inormals) {
         if (inormals.Count < 2) return false;
         float max = 0.0f;
         for (int i = 0; i < inormals.Count; i++) {
             for (int j = i + 1; j < inormals.Count; j++) {
-                var cosAngle = V3.Dot(inormals[i], inormals[j]);
+                var cosAngle = V3.Dot(inormals[i].n, inormals[j].n);
                 var dist = 1.0f - cosAngle;
                 max = MathF.Max(max, dist);
             }
@@ -416,12 +428,12 @@ public class CellTree {
     }
 
     // run marching squares on all leaf faces
-    private List<Segment>[] EvaluateFaces(Dictionary<int, (int faceIdx, int cellId, I3 min, int size)> faceSet) {
+    private List<Segment>[] EvaluateFaces(List<(int, (int faceIdx, int cellId, I3 min, int size))> faceSet) {
         List<(int, (int faceIdx, int cellId, I3 min, int size))> faces = new();
         faces.EnsureCapacity(faceSet.Count);
         foreach (var kvp in faceSet) {
-            if (facePool[kvp.Key].IsLeaf) {
-                faces.Add((kvp.Key, kvp.Value));
+            if (facePool[kvp.Item1].IsLeaf) {
+                faces.Add((kvp.Item1, kvp.Item2));
             }
         }
 
@@ -465,18 +477,18 @@ public class CellTree {
     }
 
     private static void ResolveCellVertex(in CellCtx ctx, ref LocalVertex lv, Vertex cv) {
-        if (cv is EdgeVertex mev) {
-            var intr = ctx.data.GetIntersectionNormalized(mev.edge, ctx.nodeMin, ctx.nodeSize);
+        if (cv.type == VertexType.Edge) {
+            var intr = ctx.data.GetIntersectionNormalized(cv.edge, ctx.nodeMin, ctx.nodeSize);
             lv.normal = intr!.Value.n;
             lv.cellCoord = intr.Value.p;
-        } else  if(cv is NewVertex mnv) {
-            var dif = mnv.cellMin - ctx.nodeMin;
-            lv.cellCoord = (mnv.position*mnv.cellSize + dif.ToV3()) / ctx.nodeSize;
+        } else  if(cv.type == VertexType.New) {
+            var dif = cv.cellMin - ctx.nodeMin;
+            lv.cellCoord = (cv.position*cv.cellSize + dif.ToV3()) / ctx.nodeSize;
         }
     }
 
     // Triangulate a single component as triangle fan
-    private static void TriangulateFan(in CellCtx ctx, in Component comp, List<Vertex> outV, List<int> outI) {
+    private void TriangulateFan(in CellCtx ctx, in Component comp, List<Vertex> outV, List<int> outI) {
         int start = outV.Count;
         var vspan = CollectionsMarshal.AsSpan(comp.vertices);
         foreach(ref LocalVertex v in vspan) {
@@ -484,7 +496,7 @@ public class CellTree {
         }
         int centerIdx = outV.Count;
         var apex = comp.isSharp ? comp.sharpVertex : comp.centralVertex;
-        outV.Add(new NewVertex(apex, ctx.nodeMin, ctx.nodeSize));
+        outV.Add(new Vertex(newVertexId++, apex, ctx.nodeMin, ctx.nodeSize));
 
         foreach(var (s, e, _) in comp.segments) {
             outI.Add(start + s);
@@ -677,31 +689,38 @@ public class CellTree {
         outComp.vertices.Clear();
         outComp.segments.Clear();
         V3 massPoint = V3.Zero;
-        int vIdx = 0;
-        Dictionary<Vertex, int> vertexMap = new();
+        //int vIdx = 0;
+        var vertexMap = ctx.vertexMap;
+        vertexMap.Clear();
         float mass = 0.0f;
         foreach (var idx in loop) {
             var seg = ctx.cellSegments[idx];
-            int v1Idx;
-            if (!vertexMap.TryGetValue(ctx.cellSegments[idx].v1, out v1Idx)) {
+            int v1Idx = vertexMap.IndexOf(ctx.cellSegments[idx].v1);
+            if (v1Idx < 0) {
+            //if (!vertexMap.TryGetValue(ctx.cellSegments[idx].v1, out v1Idx)) {
                 LocalVertex mv1 = default;
                 mv1.vertex = ctx.cellSegments[idx].v1;
                 ResolveCellVertex(ctx, ref mv1, seg.v1);
                 outComp.vertices.Add(mv1);
                 massPoint += mv1.cellCoord;
-                v1Idx = vIdx++;
-                vertexMap[ctx.cellSegments[idx].v1] = v1Idx;
+                //v1Idx = vIdx++;
+                //vertexMap[ctx.cellSegments[idx].v1] = v1Idx;
+                v1Idx = vertexMap.Count;
+                vertexMap.Add(ctx.cellSegments[idx].v1);
                 mass += 1.0f;
             }
-            int v2Idx;
-            if (!vertexMap.TryGetValue(ctx.cellSegments[idx].v2, out v2Idx)) {
+            int v2Idx = vertexMap.IndexOf(ctx.cellSegments[idx].v2);
+            if (v2Idx < 0) {
+            //if (!vertexMap.TryGetValue(ctx.cellSegments[idx].v2, out v2Idx)) {
                 LocalVertex mv2 = default;
                 mv2.vertex = ctx.cellSegments[idx].v2;
                 ResolveCellVertex(ctx, ref mv2, seg.v2);
                 outComp.vertices.Add(mv2);
                 massPoint += mv2.cellCoord;
-                v2Idx = vIdx++;
-                vertexMap[ctx.cellSegments[idx].v2] = v2Idx;
+                //v2Idx = vIdx++;
+                //vertexMap[ctx.cellSegments[idx].v2] = v2Idx;
+                v2Idx = vertexMap.Count;
+                vertexMap.Add(ctx.cellSegments[idx].v2);
                 mass += 1.0f;
             }
             outComp.segments.Add((v1Idx, v2Idx, seg.nDir));
@@ -1015,12 +1034,12 @@ public class CellTree {
             ref MSSegment seg = ref segs[i];
             if (!seg.sharpFeature.HasValue) {
                 segments.Add(new Segment(
-                    new EdgeVertex(seg.v1.resolved.edge),
-                    new EdgeVertex(seg.v2.resolved.edge),
+                    new Vertex(seg.v1.resolved.edge),
+                    new Vertex(seg.v2.resolved.edge),
                     faceId>>1));
             } else {
                 var sfv = seg.sharpFeature.Value;
-                var newVert = new NewVertex(sfv, min, size);
+                var newVert = new Vertex(newVertexId++, sfv, min, size);
                 var toNewVert1 = seg.sharpFeature2 - seg.v1.resolved.localPos2;
                 var toNewVert2 = seg.sharpFeature2 - seg.v2.resolved.localPos2;
                 float minDist = float.Max(V2.Dot(toNewVert1, toNewVert1), V2.Dot(toNewVert2, toNewVert2));
@@ -1029,17 +1048,17 @@ public class CellTree {
                 //   don't want to create very small triangles
                 if (minDist < 1e-3) {
                     segments.Add(new Segment(
-                        new EdgeVertex(seg.v1.resolved.edge),
-                        new EdgeVertex(seg.v2.resolved.edge),
+                        new Vertex(seg.v1.resolved.edge),
+                        new Vertex(seg.v2.resolved.edge),
                         faceId>>1));
                 } else {
                     segments.Add(new Segment(
-                        new EdgeVertex(seg.v1.resolved.edge),
+                        new Vertex(seg.v1.resolved.edge),
                         newVert,
                         faceId>>1));
                     segments.Add(new Segment(
                         newVert,
-                        new EdgeVertex(seg.v2.resolved.edge),
+                        new Vertex(seg.v2.resolved.edge),
                         faceId>>1));
                 }
             }
@@ -1131,35 +1150,46 @@ public class CellTree {
         faceSpan[faceUid].firstChild = firstFaceChild;
     }
 
+    struct FaceCtx {
+        public List<Segment> outSegments;
+        public List<Segment>[] faceSegments;
+        public bool reverse;
+        public CellTree tree;
+    }
+
     // collect all segments from the quadtree
     private void GetCellFaceSegments(int cellId, List<Segment> outSegments, List<Segment>[] faceSegments) {
-        bool reverse = false;
-		void recurseFace(int faceId) {
-			if (facePool[faceId].IsLeaf) {
-                var segs = faceSegments[faceId];
+        var ctx = new FaceCtx() {
+            outSegments = outSegments,
+            faceSegments = faceSegments,
+            tree = this
+        };
+		static void recurseFace(int faceId, in FaceCtx ctx) {
+			if (ctx.tree.facePool[faceId].IsLeaf) {
+                var segs = ctx.faceSegments[faceId];
                 var len = segs.Count;
                 // segments on negative face need to be reversed
                 for (int i = 0; i < len; i++) {
-                    var cseg = reverse ? segs[i] : segs[len - i - 1];
-                    if (reverse) {
-                        outSegments.Add(cseg);
+                    var cseg = ctx.reverse ? segs[i] : segs[len - i - 1];
+                    if (ctx.reverse) {
+                        ctx.outSegments.Add(cseg);
                     } else {
                         // reverse segment
-                        outSegments.Add(new Segment(cseg.v2, cseg.v1, cseg.nDir));
+                        ctx.outSegments.Add(new Segment(cseg.v2, cseg.v1, cseg.nDir));
                     }
                 }
 			} else {
-                int fc = facePool[faceId].firstChild;
-                recurseFace(fc);
-                recurseFace(fc + 1);
-                recurseFace(fc + 2);
-                recurseFace(fc + 3);
+                int fc = ctx.tree.facePool[faceId].firstChild;
+                recurseFace(fc, in ctx);
+                recurseFace(fc + 1, in ctx);
+                recurseFace(fc + 2, in ctx);
+                recurseFace(fc + 3, in ctx);
 			}
 		}
         for (int i = 0; i < 6; i++) {
             var face = cellFacePool[cellId][i];
-            reverse = (i&1) == 0;
-			recurseFace(face);
+            ctx.reverse = (i&1) == 0;
+			recurseFace(face, in ctx);
 		}
     }
 
